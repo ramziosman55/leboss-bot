@@ -1,6 +1,7 @@
 import os, logging, json
 from datetime import datetime
 from groq import Groq
+from supabase import create_client
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -16,18 +17,19 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY       = os.getenv("GROQ_API_KEY")
+SUPABASE_URL       = os.getenv("SUPABASE_URL")
+SUPABASE_KEY       = os.getenv("SUPABASE_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 MODEL  = "llama-3.3-70b-versatile"
 
-# ── IDs autorisés ─────────────────────────────────────────────────────────────
 RAMZI_ID = 5379708364
 AUTHORIZED_USERS = {
     5379708364: "ramzi",
     8924126780: "friend",
 }
 
-# ── System prompt Ramzi ───────────────────────────────────────────────────────
 SYSTEM_RAMZI = """Tu es LeBoss AI, l'agent IA personnel et exclusif de Ramzi Osmane.
 
 ━━━ QUI EST RAMZI ━━━
@@ -55,7 +57,6 @@ SYSTEM_RAMZI = """Tu es LeBoss AI, l'agent IA personnel et exclusif de Ramzi Osm
 - Jamais "Bien sûr !", "Absolument !", "Certainement !"
 - Termine toujours par une action concrète"""
 
-# ── System prompt utilisateurs généraux ───────────────────────────────────────
 SYSTEM_GENERAL = """Tu es LeBoss AI, un agent IA personnel ultra-performant.
 
 ━━━ TA PERSONNALITÉ ━━━
@@ -73,7 +74,6 @@ SYSTEM_GENERAL = """Tu es LeBoss AI, un agent IA personnel ultra-performant.
 4. Business et entrepreneuriat
 5. Rédaction en français, anglais et arabe
 6. Trading et analyse de marchés
-7. Design et créativité
 
 ━━━ STYLE ━━━
 - Questions simples → réponse courte et directe
@@ -83,12 +83,12 @@ SYSTEM_GENERAL = """Tu es LeBoss AI, un agent IA personnel ultra-performant.
 - Termine toujours par une action concrète ou suggestion"""
 
 PROMPTS = {
-    "code": "Tu es un développeur senior expert. Code complet, commenté, production-ready. Directs sans introduction.",
-    "web": "Tu es expert web. Génère des sites COMPLETS HTML+CSS+JS en un seul fichier. Design moderne, responsive, vrai contenu.",
-    "redac": "Tu es expert en copywriting. Contenu percutant, structuré, adapté à l'audience. Pas de remplissage.",
-    "analyse": "Tu es stratège business. Analyse factuelle, recommandations concrètes, plan d'action en 3 étapes.",
-    "trade": "Tu es trader expert. Analyse technique précise, gestion du risque toujours mentionnée. Pédagogie avant tout.",
-    "marketing": "Tu es expert marketing digital. Stratégies adaptées, KPIs mesurables, outils gratuits privilégiés.",
+    "code": "Tu es un développeur senior expert. Code complet, commenté, production-ready.",
+    "web": "Tu es expert web. Génère des sites COMPLETS HTML+CSS+JS en un seul fichier. Design moderne, responsive.",
+    "redac": "Tu es expert en copywriting. Contenu percutant, structuré, adapté à l'audience.",
+    "analyse": "Tu es stratège business. Analyse factuelle, recommandations concrètes, plan d'action.",
+    "trade": "Tu es trader expert. Analyse technique précise, gestion du risque toujours mentionnée.",
+    "marketing": "Tu es expert marketing digital. Stratégies adaptées, KPIs mesurables.",
     "traduit": "Tu es traducteur expert trilingue FR/EN/AR. Traduction naturelle, adaptation culturelle.",
     "resume": "Tu es expert en synthèse. Structure hiérarchique, points clés, actions à retenir.",
 }
@@ -96,7 +96,6 @@ PROMPTS = {
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-sessions: dict[int, list] = {}
 messages_log: list = []
 connected_clients: list = []
 
@@ -104,17 +103,45 @@ app = FastAPI(title="LeBoss AI API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 def get_system(user_id: int) -> str:
-    if user_id == RAMZI_ID:
-        return SYSTEM_RAMZI
-    return SYSTEM_GENERAL
-
-def get_history(chat_id, system=None):
-    if chat_id not in sessions:
-        sessions[chat_id] = [{"role": "system", "content": system or SYSTEM_GENERAL}]
-    return sessions[chat_id]
+    return SYSTEM_RAMZI if user_id == RAMZI_ID else SYSTEM_GENERAL
 
 def is_authorized(update):
     return update.effective_user.id in AUTHORIZED_USERS
+
+def save_message(chat_id, user_id, role, content):
+    try:
+        supabase.table("conversations").insert({
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "role": role,
+            "content": content,
+        }).execute()
+    except Exception as e:
+        logger.error(f"Supabase save error: {e}")
+
+def load_history(chat_id, user_id):
+    try:
+        result = supabase.table("conversations")\
+            .select("role,content")\
+            .eq("chat_id", chat_id)\
+            .order("created_at", desc=False)\
+            .limit(30)\
+            .execute()
+        history = [{"role": r["role"], "content": r["content"]} for r in result.data]
+        system = get_system(user_id)
+        return [{"role": "system", "content": system}] + history
+    except Exception as e:
+        logger.error(f"Supabase load error: {e}")
+        return [{"role": "system", "content": get_system(user_id)}]
+
+def clear_history(chat_id):
+    try:
+        supabase.table("conversations")\
+            .delete()\
+            .eq("chat_id", chat_id)\
+            .execute()
+    except Exception as e:
+        logger.error(f"Supabase clear error: {e}")
 
 async def send_long(update, text):
     for i in range(0, len(text), 4096):
@@ -132,14 +159,10 @@ async def broadcast(data: dict):
         connected_clients.remove(ws)
 
 async def ask_groq(chat_id, user_id, user_msg, system=None):
-    if system is None:
-        system = get_system(user_id)
-    history = get_history(chat_id, system)
+    history = load_history(chat_id, user_id)
+    if system:
+        history[0] = {"role": "system", "content": system}
     history.append({"role": "user", "content": user_msg})
-    if len(history) > 31:
-        system_msg = history[0]
-        history = [system_msg] + history[-30:]
-        sessions[chat_id] = history
     response = client.chat.completions.create(
         model=MODEL,
         messages=history,
@@ -148,7 +171,8 @@ async def ask_groq(chat_id, user_id, user_msg, system=None):
         top_p=0.9,
     )
     reply = response.choices[0].message.content
-    history.append({"role": "assistant", "content": reply})
+    save_message(chat_id, user_id, "user", user_msg)
+    save_message(chat_id, user_id, "assistant", reply)
     return reply
 
 @app.get("/")
@@ -163,7 +187,7 @@ def get_messages():
 def get_stats():
     return {
         "total_messages": len(messages_log),
-        "active_sessions": len(sessions),
+        "active_sessions": 0,
         "bot_status": "online"
     }
 
@@ -191,7 +215,7 @@ async def start(update, context):
     if user_id == RAMZI_ID:
         msg = (
             "Salam Ramzi ! 👋\n\n"
-            "LeBoss AI est opérationnel. Je connais tous tes projets.\n\n"
+            "LeBoss AI est opérationnel. Je connais tous tes projets et je me souviens de nos conversations.\n\n"
             "Commandes :\n"
             "/code — Dev & programmation\n"
             "/web — Sites web complets\n"
@@ -201,13 +225,14 @@ async def start(update, context):
             "/marketing — Marketing digital\n"
             "/traduit — Traduction FR/EN/AR\n"
             "/resume — Synthèse\n"
-            "/reset — Nouvelle conversation\n\n"
+            "/reset — Effacer la mémoire\n\n"
             "Dis-moi ce dont tu as besoin."
         )
     else:
         msg = (
             f"Salam {first_name} ! 👋\n\n"
-            f"Je suis LeBoss AI, ton agent IA personnel.\n\n"
+            f"Je suis LeBoss AI, ton agent IA personnel.\n"
+            f"Je me souviens de nos conversations précédentes.\n\n"
             "Commandes :\n"
             "/code — Dev & programmation\n"
             "/web — Sites web complets\n"
@@ -217,7 +242,7 @@ async def start(update, context):
             "/marketing — Marketing digital\n"
             "/traduit — Traduction FR/EN/AR\n"
             "/resume — Synthèse\n"
-            "/reset — Nouvelle conversation\n\n"
+            "/reset — Effacer la mémoire\n\n"
             "Dis-moi ce dont tu as besoin."
         )
     await update.message.reply_text(msg)
@@ -226,8 +251,9 @@ async def reset(update, context):
     if not is_authorized(update):
         await update.message.reply_text("⛔ Accès non autorisé.")
         return
-    sessions[update.effective_chat.id] = []
-    await update.message.reply_text("Conversation remise à zéro. 🔄")
+    chat_id = update.effective_chat.id
+    clear_history(chat_id)
+    await update.message.reply_text("Mémoire effacée. Nouvelle conversation. 🔄")
 
 async def specialized_cmd(update, context):
     if not is_authorized(update):
@@ -253,7 +279,6 @@ async def specialized_cmd(update, context):
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
         system = PROMPTS.get(cmd, get_system(user_id))
-        sessions[chat_id] = [{"role": "system", "content": system}]
         reply = await ask_groq(chat_id, user_id, user_input, system=system)
         await send_long(update, reply)
         log_entry = {
@@ -309,7 +334,7 @@ def main():
     for cmd in PROMPTS:
         telegram_app.add_handler(CommandHandler(cmd, specialized_cmd))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("🚀 LeBoss AI v4 multi-users démarré !")
+    logger.info("🚀 LeBoss AI v5 avec mémoire Supabase démarré !")
     telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
