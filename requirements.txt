@@ -1,0 +1,6 @@
+groq
+python-telegram-bot
+python-dotenv
+fastapi
+uvicorn
+websockets

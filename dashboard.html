@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LeBoss AI — Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--orange:#E8610A;--dark:#0F0F0F;--dark2:#1A1A1A;--dark3:#242424;--gray:#6B6B6B;--white:#fff;--green:#22c55e;--red:#ef4444}
+body{font-family:'Inter',sans-serif;background:var(--dark);color:var(--white);min-height:100vh}
+nav{display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:64px;background:var(--dark2);border-bottom:1px solid rgba(255,255,255,0.06)}
+.logo{font-family:'Syne',sans-serif;font-size:20px;font-weight:800;color:var(--white)}
+.logo span{color:var(--orange)}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;margin-right:8px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.status-text{font-size:13px;color:rgba(255,255,255,0.5)}
+.main{padding:32px;max-width:1200px;margin:0 auto}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px}
+.metric{background:var(--dark2);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:20px}
+.metric-label{font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px}
+.metric-val{font-family:'Syne',sans-serif;font-size:28px;font-weight:800;color:var(--white)}
+.metric-val.orange{color:var(--orange)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.card{background:var(--dark2);border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:24px}
+.card-title{font-family:'Syne',sans-serif;font-size:15px;font-weight:700;color:var(--white);margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.card-title::before{content:'';width:3px;height:16px;background:var(--orange);border-radius:2px}
+.msg-list{display:flex;flex-direction:column;gap:8px;max-height:400px;overflow-y:auto}
+.msg-item{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:12px;animation:slideIn .3s ease}
+@keyframes slideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+.msg-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.msg-from{font-size:12px;font-weight:600;color:var(--orange)}
+.msg-time{font-size:11px;color:rgba(255,255,255,0.3)}
+.msg-cmd{display:inline-block;font-size:10px;background:rgba(232,97,10,0.15);color:var(--orange);padding:2px 8px;border-radius:4px;margin-bottom:6px}
+.msg-input{font-size:13px;color:rgba(255,255,255,0.7);margin-bottom:4px}
+.msg-reply{font-size:12px;color:rgba(255,255,255,0.4);line-height:1.5}
+.ws-indicator{display:flex;align-items:center;gap:6px;font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:12px}
+.ws-dot{width:6px;height:6px;border-radius:50%;background:var(--red)}
+.ws-dot.connected{background:var(--green);animation:pulse 2s infinite}
+.empty{text-align:center;padding:40px;color:rgba(255,255,255,0.2);font-size:14px}
+.stat-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.stat-row:last-child{border-bottom:none}
+.stat-label{font-size:13px;color:rgba(255,255,255,0.5)}
+.stat-val{font-size:13px;font-weight:600;color:var(--white)}
+.stat-val.green{color:var(--green)}
+.stat-val.orange{color:var(--orange)}
+.refresh-btn{background:rgba(232,97,10,0.15);color:var(--orange);border:1px solid rgba(232,97,10,0.3);padding:6px 14px;border-radius:8px;font-size:12px;cursor:pointer;transition:background .2s}
+.refresh-btn:hover{background:rgba(232,97,10,0.25)}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">LeBoss<span>.</span>AI</div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <span id="nav-status" class="status-text"><span class="status-dot"></span>Connexion...</span>
+    <button class="refresh-btn" onclick="loadStats()">↻ Actualiser</button>
+  </div>
+</nav>
+
+<div class="main">
+  <div class="metrics">
+    <div class="metric">
+      <div class="metric-label">Messages reçus</div>
+      <div class="metric-val orange" id="m-total">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Sessions actives</div>
+      <div class="metric-val" id="m-sessions">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Statut bot</div>
+      <div class="metric-val" id="m-status" style="font-size:16px;margin-top:6px;color:#22c55e">● En ligne</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Clients dashboard</div>
+      <div class="metric-val" id="m-clients">1</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">Messages en temps réel</div>
+      <div class="ws-indicator">
+        <div class="ws-dot" id="ws-dot"></div>
+        <span id="ws-label">Connexion WebSocket...</span>
+      </div>
+      <div class="msg-list" id="msg-list">
+        <div class="empty" id="empty-msg">En attente de messages...<br><small>Envoie un message à @leboss_ai_bot</small></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Statistiques</div>
+      <div id="stats-content">
+        <div class="stat-row">
+          <span class="stat-label">API</span>
+          <span class="stat-val green" id="api-status">Vérification...</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">WebSocket</span>
+          <span class="stat-val" id="ws-status">Connexion...</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Bot Telegram</span>
+          <span class="stat-val green">@leboss_ai_bot</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Modèle IA</span>
+          <span class="stat-val orange">Llama 3.3 70B</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">API Engine</span>
+          <span class="stat-val">Groq (gratuit)</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Dernière activité</span>
+          <span class="stat-val" id="last-activity">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+const WS  = 'ws://localhost:8000/ws';
+let ws, msgCount = 0;
+
+function addMessage(msg) {
+  const empty = document.getElementById('empty-msg');
+  if (empty) empty.remove();
+  msgCount++;
+  document.getElementById('m-total').textContent = msgCount;
+  document.getElementById('last-activity').textContent = msg.time || new Date().toLocaleTimeString();
+  const list = document.getElementById('msg-list');
+  const div = document.createElement('div');
+  div.className = 'msg-item';
+  div.innerHTML = `
+    <div class="msg-header">
+      <span class="msg-from">👤 ${msg.from || 'Utilisateur'}</span>
+      <span class="msg-time">${msg.time || ''}</span>
+    </div>
+    <span class="msg-cmd">/${msg.cmd || 'chat'}</span>
+    <div class="msg-input">💬 ${msg.input || ''}</div>
+    <div class="msg-reply">🤖 ${msg.reply || ''}</div>
+  `;
+  list.insertBefore(div, list.firstChild);
+  if (list.children.length > 20) list.removeChild(list.lastChild);
+}
+
+function connectWS() {
+  ws = new WebSocket(WS);
+  ws.onopen = () => {
+    document.getElementById('ws-dot').classList.add('connected');
+    document.getElementById('ws-label').textContent = 'WebSocket connecté ✓';
+    document.getElementById('ws-status').textContent = 'Connecté ✓';
+    document.getElementById('ws-status').className = 'stat-val green';
+    document.getElementById('nav-status').innerHTML = '<span class="status-dot"></span>Dashboard connecté en temps réel';
+  };
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'history') {
+      data.messages.forEach(m => addMessage(m));
+    } else if (data.type === 'message') {
+      addMessage(data);
+    }
+  };
+  ws.onclose = () => {
+    document.getElementById('ws-dot').classList.remove('connected');
+    document.getElementById('ws-label').textContent = 'Déconnecté — reconnexion dans 3s...';
+    document.getElementById('ws-status').textContent = 'Déconnecté';
+    document.getElementById('ws-status').className = 'stat-val';
+    setTimeout(connectWS, 3000);
+  };
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch(API + '/stats');
+    const d = await r.json();
+    document.getElementById('m-sessions').textContent = d.active_sessions || 0;
+    document.getElementById('api-status').textContent = 'En ligne ✓';
+    document.getElementById('api-status').className = 'stat-val green';
+  } catch(e) {
+    document.getElementById('api-status').textContent = 'Hors ligne';
+    document.getElementById('api-status').className = 'stat-val';
+  }
+}
+
+connectWS();
+loadStats();
+setInterval(loadStats, 10000);
+</script>
+</body>
+</html>
