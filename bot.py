@@ -1,4 +1,4 @@
-import os, logging, json
+import os, logging, json, httpx
 from datetime import datetime
 from groq import Groq
 from supabase import create_client
@@ -22,7 +22,7 @@ SUPABASE_KEY       = os.getenv("SUPABASE_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL  = "llama-3.3-70b-versatile"
+MODEL = "llama-3.3-70b-versatile"
 
 RAMZI_ID = 5379708364
 AUTHORIZED_USERS = {
@@ -63,7 +63,7 @@ SYSTEM_GENERAL = """Tu es LeBoss AI, un agent IA personnel ultra-performant.
 - Direct, intelligent, sans blabla inutile
 - Tu parles comme un ami expert
 - Tu anticipes les besoins avant qu'ils soient exprimés
-- Tu es proactif : tu proposes toujours la prochaine étape
+- Proactif : tu proposes toujours la prochaine étape
 - Honnête : si tu ne sais pas, tu le dis clairement
 - Jamais "Bien sûr !", "Absolument !", "Certainement !"
 
@@ -80,7 +80,7 @@ SYSTEM_GENERAL = """Tu es LeBoss AI, un agent IA personnel ultra-performant.
 - Tâches complexes → structure claire et étapes numérotées
 - Code → toujours complet et production-ready
 - Adapte la langue à l'utilisateur automatiquement
-- Termine toujours par une action concrète ou suggestion"""
+- Termine toujours par une action concrète"""
 
 PROMPTS = {
     "code": "Tu es un développeur senior expert. Code complet, commenté, production-ready.",
@@ -175,6 +175,11 @@ async def ask_groq(chat_id, user_id, user_msg, system=None):
     save_message(chat_id, user_id, "assistant", reply)
     return reply
 
+async def generate_image(prompt: str) -> str:
+    encoded = prompt.replace(" ", "%20")
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true"
+    return url
+
 @app.get("/")
 def root():
     return {"status": "LeBoss AI en ligne", "time": datetime.now().isoformat()}
@@ -219,6 +224,7 @@ async def start(update, context):
             "Commandes :\n"
             "/code — Dev & programmation\n"
             "/web — Sites web complets\n"
+            "/image — Générer une image\n"
             "/redac — Copywriting & contenu\n"
             "/analyse — Analyse stratégique\n"
             "/trade — Trading & forex\n"
@@ -231,11 +237,11 @@ async def start(update, context):
     else:
         msg = (
             f"Salam {first_name} ! 👋\n\n"
-            f"Je suis LeBoss AI, ton agent IA personnel.\n"
-            f"Je me souviens de nos conversations précédentes.\n\n"
+            f"Je suis LeBoss AI, ton agent IA personnel.\n\n"
             "Commandes :\n"
             "/code — Dev & programmation\n"
             "/web — Sites web complets\n"
+            "/image — Générer une image\n"
             "/redac — Copywriting & contenu\n"
             "/analyse — Analyse stratégique\n"
             "/trade — Trading & forex\n"
@@ -254,6 +260,36 @@ async def reset(update, context):
     chat_id = update.effective_chat.id
     clear_history(chat_id)
     await update.message.reply_text("Mémoire effacée. Nouvelle conversation. 🔄")
+
+async def image_cmd(update, context):
+    if not is_authorized(update):
+        await update.message.reply_text("⛔ Accès non autorisé.")
+        return
+    chat_id = update.effective_chat.id
+    user_input = " ".join(context.args)
+    if not user_input:
+        await update.message.reply_text(
+            "Décris l'image que tu veux générer.\n"
+            "Ex: /image logo moderne pour Glojia skincare fond blanc\n"
+            "Ex: /image villa moderne à La Soukra Tunisie coucher de soleil"
+        )
+        return
+    await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+    await update.message.reply_text("🎨 Génération en cours...")
+    try:
+        image_url = await generate_image(user_input)
+        async with httpx.AsyncClient(timeout=60) as http:
+            resp = await http.get(image_url)
+            if resp.status_code == 200:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=resp.content,
+                    caption=f"🎨 {user_input}"
+                )
+            else:
+                await update.message.reply_text(f"Erreur génération. Réessaie avec une description différente.")
+    except Exception as e:
+        await update.message.reply_text(f"Erreur : {str(e)}")
 
 async def specialized_cmd(update, context):
     if not is_authorized(update):
@@ -331,10 +367,11 @@ def main():
     telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(CommandHandler("reset", reset))
+    telegram_app.add_handler(CommandHandler("image", image_cmd))
     for cmd in PROMPTS:
         telegram_app.add_handler(CommandHandler(cmd, specialized_cmd))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("🚀 LeBoss AI v5 avec mémoire Supabase démarré !")
+    logger.info("🚀 LeBoss AI v6 avec génération d'images démarré !")
     telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
