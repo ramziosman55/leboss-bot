@@ -1,4 +1,4 @@
-import os, logging, json, httpx
+import os, logging, json, httpx, replicate
 from datetime import datetime
 from groq import Groq
 from supabase import create_client
@@ -19,6 +19,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY       = os.getenv("GROQ_API_KEY")
 SUPABASE_URL       = os.getenv("SUPABASE_URL")
 SUPABASE_KEY       = os.getenv("SUPABASE_KEY")
+REPLICATE_API_KEY  = os.getenv("REPLICATE_API_KEY")
+
+os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_KEY or ""
 
 client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -68,19 +71,18 @@ SYSTEM_GENERAL = """Tu es LeBoss AI, un agent IA personnel ultra-performant.
 - Jamais "Bien sûr !", "Absolument !", "Certainement !"
 
 ━━━ TES DOMAINES ━━━
-1. Développement web (Node.js, Python, React, HTML/CSS)
-2. Marketing digital et stratégie de contenu
-3. Intelligence artificielle et automatisation
+1. Développement web
+2. Marketing digital
+3. Intelligence artificielle
 4. Business et entrepreneuriat
-5. Rédaction en français, anglais et arabe
-6. Trading et analyse de marchés
+5. Rédaction multilingue
+6. Trading et analyse
 
 ━━━ STYLE ━━━
 - Questions simples → réponse courte et directe
 - Tâches complexes → structure claire et étapes numérotées
 - Code → toujours complet et production-ready
-- Adapte la langue à l'utilisateur automatiquement
-- Termine toujours par une action concrète"""
+- Adapte la langue à l'utilisateur automatiquement"""
 
 PROMPTS = {
     "code": "Tu es un développeur senior expert. Code complet, commenté, production-ready.",
@@ -175,10 +177,21 @@ async def ask_groq(chat_id, user_id, user_msg, system=None):
     save_message(chat_id, user_id, "assistant", reply)
     return reply
 
-async def generate_image(prompt: str) -> str:
-    encoded = prompt.replace(" ", "%20")
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&enhance=true"
-    return url
+async def generate_image_flux(prompt: str) -> bytes:
+    output = replicate.run(
+        "black-forest-labs/flux-schnell",
+        input={
+            "prompt": prompt,
+            "num_outputs": 1,
+            "aspect_ratio": "1:1",
+            "output_format": "webp",
+            "output_quality": 90
+        }
+    )
+    image_url = output[0]
+    async with httpx.AsyncClient(timeout=60) as http:
+        resp = await http.get(str(image_url))
+        return resp.content
 
 @app.get("/")
 def root():
@@ -220,11 +233,11 @@ async def start(update, context):
     if user_id == RAMZI_ID:
         msg = (
             "Salam Ramzi ! 👋\n\n"
-            "LeBoss AI est opérationnel. Je connais tous tes projets et je me souviens de nos conversations.\n\n"
+            "LeBoss AI v7 est opérationnel.\n\n"
             "Commandes :\n"
             "/code — Dev & programmation\n"
             "/web — Sites web complets\n"
-            "/image — Générer une image\n"
+            "/image — Générer une image HD (Flux AI)\n"
             "/redac — Copywriting & contenu\n"
             "/analyse — Analyse stratégique\n"
             "/trade — Trading & forex\n"
@@ -241,7 +254,7 @@ async def start(update, context):
             "Commandes :\n"
             "/code — Dev & programmation\n"
             "/web — Sites web complets\n"
-            "/image — Générer une image\n"
+            "/image — Générer une image HD\n"
             "/redac — Copywriting & contenu\n"
             "/analyse — Analyse stratégique\n"
             "/trade — Trading & forex\n"
@@ -259,7 +272,7 @@ async def reset(update, context):
         return
     chat_id = update.effective_chat.id
     clear_history(chat_id)
-    await update.message.reply_text("Mémoire effacée. Nouvelle conversation. 🔄")
+    await update.message.reply_text("Mémoire effacée. 🔄")
 
 async def image_cmd(update, context):
     if not is_authorized(update):
@@ -269,27 +282,23 @@ async def image_cmd(update, context):
     user_input = " ".join(context.args)
     if not user_input:
         await update.message.reply_text(
-            "Décris l'image que tu veux générer.\n"
-            "Ex: /image logo moderne pour Glojia skincare fond blanc\n"
-            "Ex: /image villa moderne à La Soukra Tunisie coucher de soleil"
+            "Décris l'image que tu veux générer.\n\n"
+            "Ex: /image logo Glojia skincare minimal burgundy white\n"
+            "Ex: /image modern villa Tunisia sunset ocean view\n"
+            "Ex: /image product photo skincare bottle luxury"
         )
         return
     await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-    await update.message.reply_text("🎨 Génération en cours...")
+    await update.message.reply_text("🎨 Génération HD en cours... (15-30 secondes)")
     try:
-        image_url = await generate_image(user_input)
-        async with httpx.AsyncClient(timeout=60) as http:
-            resp = await http.get(image_url)
-            if resp.status_code == 200:
-                await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=resp.content,
-                    caption=f"🎨 {user_input}"
-                )
-            else:
-                await update.message.reply_text(f"Erreur génération. Réessaie avec une description différente.")
+        image_bytes = await generate_image_flux(user_input)
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=image_bytes,
+            caption=f"🎨 {user_input}"
+        )
     except Exception as e:
-        await update.message.reply_text(f"Erreur : {str(e)}")
+        await update.message.reply_text(f"Erreur génération : {str(e)}")
 
 async def specialized_cmd(update, context):
     if not is_authorized(update):
@@ -332,7 +341,7 @@ async def specialized_cmd(update, context):
 
 async def handle_message(update, context):
     if not is_authorized(update):
-        await update.message.reply_text("⛔ Accès non autorisé. Contacte Ramzi pour obtenir l'accès.")
+        await update.message.reply_text("⛔ Accès non autorisé. Contacte Ramzi.")
         return
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -371,7 +380,7 @@ def main():
     for cmd in PROMPTS:
         telegram_app.add_handler(CommandHandler(cmd, specialized_cmd))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("🚀 LeBoss AI v6 avec génération d'images démarré !")
+    logger.info("🚀 LeBoss AI v7 avec Flux HD démarré !")
     telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
